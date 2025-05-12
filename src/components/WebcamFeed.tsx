@@ -113,11 +113,19 @@ const WebcamFeed = () => {
       ) : (
         <div className="relative">
           <Webcam
-            ref={webcamRef}
-            className="rounded-lg shadow-lg w-full"
-            audio={false}
-            screenshotFormat="image/jpeg"
-          />
+          ref={webcamRef}
+          className="rounded-lg shadow-lg w-full"
+          audio={false}
+          screenshotFormat="image/jpeg"
+          videoConstraints={{
+            facingMode: 'environment',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          }}
+          onUserMediaError={() =>
+            setError('Failed to access camera.')
+          }
+        />
           <canvas
             ref={canvasRef}
             className="absolute top-0 left-0 z-10"
