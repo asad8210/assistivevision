@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global Styles */
+body {
+  font-family: 'Roboto', sans-serif;
+  background-color: #f7fafc;
+  color: #333;
+  margin: 0;
+  padding: 0;
+}
+
+h1, h2 {
+  font-family: 'Roboto', sans-serif;
+  margin-bottom: 0.5rem;
+}
+
+/* Card Styling */
+.card {
+  @apply bg-white rounded-2xl shadow-md transition-all duration-300 p-6;
+}
+
+.card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+}
+
+/* Icon Styling */
+.icon {
+  width: 2rem;
+  height: 2rem;
+  transition: transform 0.3s ease;
+}
+
+.icon:hover {
+  transform: scale(1.1);
+}
+
+/* Responsive Grid */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin: 0 auto;
+}
+
+/* Text Styles */
+.text-center {
+  text-align: center;
+}
+
+.text-gray-900 {
+  color: #1a202c;
+}
+
+.text-gray-800 {
+  color: #2d3748;
+}
+
+h2 {
+  font-size: 1.875rem;
+  font-weight: 600;
+  color: #4a5568;
+}
+
+/* Section Heading Icon Hover */
+h2 .icon {
+  transition: color 0.3s ease;
+}
+
+h2:hover .icon {
+  color: #4c9dff;
+}
+
+/* Custom Gradient Background */
+.bg-gradient-to-r {
+  background-image: linear-gradient(to right, #e0e7ff, #c7d2fe, #a5b4fc);
+}
+
+.bg-gradient-to-r .text-gray-900 {
+  color: #1e293b;
+}
