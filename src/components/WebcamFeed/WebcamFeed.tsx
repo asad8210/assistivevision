@@ -137,7 +137,7 @@ const WebcamFeed = () => {
             height: { ideal: 720 },
           }}
           onUserMediaError={() =>
-            setError('Failed to access webcam. Please ensure the camera is available and try again.')
+            setError('Failed to access camera.')
           }
         />
         <canvas
