@@ -29,6 +29,7 @@ const AssistiveHomePage: React.FC = () => {
   const [isModelLoading, setIsModelLoading] = useState<boolean>(true); // COCO-SSD model loading
   const [isGeneratingDetailedDescription, setIsGeneratingDetailedDescription] = useState<boolean>(false);
   const [objectDetections, setObjectDetections] = useState<cocoSsd.DetectedObject[]>([]);
+  const [isCurrentlySpeaking, setIsCurrentlySpeaking] = useState<boolean>(false);
 
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -39,16 +40,29 @@ const AssistiveHomePage: React.FC = () => {
   const isProcessingHoldRef = useRef<boolean>(false);
   const modelRef = useRef<cocoSsd.ObjectDetection | null>(null);
   const mountedRef = useRef(true); // To track component mount state
+  const appModeRef = useRef<'idle' | 'camera' | 'assistant'>('idle'); // To help manage states
+
+  const touchStartYRef = useRef<number | null>(null);
+  const touchStartXRef = useRef<number | null>(null);
 
 
   const { toast } = useToast();
 
   const speakAndSetStatus = useCallback((text: string, isSilent?: boolean) => {
     setStatusMessage(text);
-    if (!isSilent) {
-      speakText(text);
+    if (!isSilent && mountedRef.current) {
+      setIsCurrentlySpeaking(true);
+      speakText(text, () => {
+        if (mountedRef.current) setIsCurrentlySpeaking(false);
+      });
     }
-  }, []);
+  }, [setIsCurrentlySpeaking, setStatusMessage]); // Added dependencies
+
+  useEffect(() => {
+    if (isAssistantActive) appModeRef.current = 'assistant';
+    else if (isCameraActive) appModeRef.current = 'camera';
+    else appModeRef.current = 'idle';
+  }, [isAssistantActive, isCameraActive]);
 
   useEffect(() => {
     async function loadModel() {
@@ -78,12 +92,17 @@ const AssistiveHomePage: React.FC = () => {
     const welcomeMessage =
       "Welcome to Assistive Visions. Double tap the screen to identify objects. Tap and hold to speak to your personal assistant.";
     if (!isModelLoading && mountedRef.current) {
-        speakAndSetStatus(welcomeMessage);
+        // Only speak welcome if not already speaking and assistant isn't about to speak
+        if (!isCurrentlySpeaking && !isAssistantActive && !isCameraActive) {
+          speakAndSetStatus(welcomeMessage);
+        } else {
+          setStatusMessage(welcomeMessage);
+        }
     } else if (mountedRef.current) {
         setStatusMessage("Loading AI model for object detection...");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isModelLoading]);
+  }, [isModelLoading]); // Removed speakAndSetStatus from deps to avoid re-speaking on its change
 
 
   const drawBoundingBoxes = useCallback((predictions: cocoSsd.DetectedObject[]) => {
@@ -94,6 +113,13 @@ const AssistiveHomePage: React.FC = () => {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Adjust canvas size to video element's display size for correct scaling
+    canvas.width = video.clientWidth;
+    canvas.height = video.clientHeight;
+
+    const scaleX = video.clientWidth / video.videoWidth;
+    const scaleY = video.clientHeight / video.videoHeight;
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const font = "16px sans-serif";
     ctx.font = font;
@@ -101,15 +127,21 @@ const AssistiveHomePage: React.FC = () => {
 
     predictions.forEach(prediction => {
       const [x, y, width, height] = prediction.bbox;
+      // Scale bounding box coordinates
+      const scaledX = x * scaleX;
+      const scaledY = y * scaleY;
+      const scaledWidth = width * scaleX;
+      const scaledHeight = height * scaleY;
+
       const label = `${prediction.class} (${Math.round(prediction.score * 100)}%)`;
       ctx.strokeStyle = "#00FFFF";
       ctx.lineWidth = 2;
-      ctx.strokeRect(x, y, width, height);
+      ctx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
       ctx.fillStyle = "#00FFFF";
       const textWidth = ctx.measureText(label).width;
-      ctx.fillRect(x, y, textWidth + 4, 18);
+      ctx.fillRect(scaledX, scaledY, textWidth + 4, 18);
       ctx.fillStyle = "#000000";
-      ctx.fillText(label, x + 2, y + 2);
+      ctx.fillText(label, scaledX + 2, scaledY + 2);
     });
   }, []);
 
@@ -129,11 +161,7 @@ const AssistiveHomePage: React.FC = () => {
         return;
     }
 
-    if (canvasRef.current) {
-        canvasRef.current.width = videoElement.videoWidth;
-        canvasRef.current.height = videoElement.videoHeight;
-    }
-
+    // Canvas dimensions set by drawBoundingBoxes
     try {
         const predictions = await modelRef.current.detect(videoElement);
         if (mountedRef.current) {
@@ -175,7 +203,10 @@ const AssistiveHomePage: React.FC = () => {
                     if (mountedRef.current) {
                         if (output.detailedDescription && output.detailedDescription.trim() !== "" && output.detailedDescription !== lastSpokenDetailedDescription) {
                             setLastSpokenDetailedDescription(output.detailedDescription);
-                            speakText(output.detailedDescription);
+                            setIsCurrentlySpeaking(true);
+                            speakText(output.detailedDescription, () => {
+                                if (mountedRef.current) setIsCurrentlySpeaking(false);
+                            });
                         }
                     }
                 } catch (flowError: any) {
@@ -184,7 +215,10 @@ const AssistiveHomePage: React.FC = () => {
                         ? "AI service API key is not valid. Please check your configuration."
                         : "Sorry, I couldn't get a detailed description of the scene at the moment.";
                     if (mountedRef.current) {
-                        speakText(errorMsg);
+                        setIsCurrentlySpeaking(true);
+                        speakText(errorMsg, () => {
+                           if (mountedRef.current) setIsCurrentlySpeaking(false);
+                        });
                         toast({ title: "Detailed Description Error", description: flowError.message || "Unknown error from AI flow.", variant: "destructive"});
                     }
                 } finally {
@@ -193,7 +227,7 @@ const AssistiveHomePage: React.FC = () => {
             }
         }
     }
-  }, [drawBoundingBoxes, isGeneratingDetailedDescription, lastSpokenDetailedDescription, toast]);
+  }, [drawBoundingBoxes, isGeneratingDetailedDescription, lastSpokenDetailedDescription, toast, setIsCurrentlySpeaking]);
 
 
   const stopCamera = useCallback(() => {
@@ -205,6 +239,10 @@ const AssistiveHomePage: React.FC = () => {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach((track) => track.stop());
       videoRef.current.srcObject = null;
+    }
+    if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        setIsCurrentlySpeaking(false);
     }
     if (mountedRef.current) {
         setIsCameraActive(false);
@@ -221,7 +259,7 @@ const AssistiveHomePage: React.FC = () => {
         setLastSpokenDetailedDescription("");
         setIsGeneratingDetailedDescription(false);
     }
-  }, [isAssistantActive, speakAndSetStatus]);
+  }, [isAssistantActive, speakAndSetStatus, setIsCameraActive, setIsCurrentlySpeaking]);
 
   const startCamera = useCallback(async () => {
     if (isModelLoading) {
@@ -288,11 +326,7 @@ const AssistiveHomePage: React.FC = () => {
             setIsCameraActive(true);
             speakAndSetStatus("Camera active. Point to objects. Double tap to stop.");
 
-            if (canvasRef.current && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
-                canvasRef.current.width = videoElement.videoWidth;
-                canvasRef.current.height = videoElement.videoHeight;
-            }
-
+            // Canvas dimensions set by drawBoundingBoxes when predictions arrive
             await detectAndDescribeObjects();
 
             if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
@@ -357,13 +391,17 @@ const AssistiveHomePage: React.FC = () => {
       speechRecognitionRef.current.stop();
       speechRecognitionRef.current = null;
     }
+    if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+        setIsCurrentlySpeaking(false);
+    }
     if (mountedRef.current) {
         setIsAssistantActive(false);
         if (!isCameraActive) {
             speakAndSetStatus("Assistant off. Double tap for camera, tap & hold for assistant.");
         }
     }
-  }, [isCameraActive, speakAndSetStatus]);
+  }, [isCameraActive, speakAndSetStatus, setIsAssistantActive, setIsCurrentlySpeaking]);
 
   const startPersonalAssistant = useCallback(() => {
     if (isCameraActive) {
@@ -371,7 +409,14 @@ const AssistiveHomePage: React.FC = () => {
         return;
     }
     if (mountedRef.current) setIsAssistantActive(true);
-    speakAndSetStatus("Listening..."); // Initial "Listening..." spoken once.
+    
+    // Speak "Listening..." once when assistant starts.
+    setStatusMessage("Listening...");
+    setIsCurrentlySpeaking(true);
+    speakText("Listening...", () => {
+       if(mountedRef.current) setIsCurrentlySpeaking(false);
+    });
+
 
     speechRecognitionRef.current = startSpeechRecognition(
       async (result: SpeechRecognitionResult) => {
@@ -387,17 +432,18 @@ const AssistiveHomePage: React.FC = () => {
               locationString = `Lat: ${position.coords.latitude.toFixed(2)}, Lon: ${position.coords.longitude.toFixed(2)}`;
             } catch (geoError: any) {
               console.warn("Could not get location:", geoError);
-              // ... (toast for location error)
             }
 
             const assistantResponse = await personalAssistant({ speech: result.transcript, location: locationString });
             if (!mountedRef.current) return;
 
-            setStatusMessage(assistantResponse.response); // Update UI text
-            speakText(assistantResponse.response, () => { // Speak response, then...
+            setStatusMessage(assistantResponse.response); 
+            setIsCurrentlySpeaking(true);
+            speakText(assistantResponse.response, () => { 
+              if (mountedRef.current) setIsCurrentlySpeaking(false);
               if (mountedRef.current) {
                 if (speechRecognitionRef.current && isAssistantActive) {
-                   setStatusMessage("Listening..."); // Update UI for listening state
+                   setStatusMessage("Listening..."); 
                    speechRecognitionRef.current?.start();
                 } else if (!isAssistantActive) {
                    stopPersonalAssistant();
@@ -412,12 +458,14 @@ const AssistiveHomePage: React.FC = () => {
                 : "Sorry, I couldn't process that. Please try again.";
             if (!mountedRef.current) return;
 
-            setStatusMessage(errorMsg); // Update UI text
+            setStatusMessage(errorMsg);
+            setIsCurrentlySpeaking(true);
             toast({ title: "Assistant Error", description: apiError.message || String(apiError), variant: "destructive" });
-            speakText(errorMsg, () => { // Speak error, then...
+            speakText(errorMsg, () => { 
+                if(mountedRef.current) setIsCurrentlySpeaking(false);
                 if (mountedRef.current) {
                     if (speechRecognitionRef.current && isAssistantActive) {
-                       setStatusMessage("Listening..."); // Update UI for listening state
+                       setStatusMessage("Listening..."); 
                        speechRecognitionRef.current?.start();
                     }
                 }
@@ -439,32 +487,32 @@ const AssistiveHomePage: React.FC = () => {
             shouldStopAndSpeak = true;
         } else if (error === "audio-capture") {
             messageForUser = "No microphone found or microphone is not working. Please check your microphone and try again.";
-            shouldStopAndSpeak = true; // Often better to stop and inform
+            shouldStopAndSpeak = true; 
         } else if (error === "not-allowed" || error === "service-not-allowed") {
             messageForUser = "Microphone permission denied. Please enable it in browser settings.";
             shouldStopAndSpeak = true;
         } else if (error === "network") {
             messageForUser = "Network error during speech recognition. Please check your connection and try again.";
-            // For network, could retry or stop. Let's retry after speaking.
         }
 
         if (shouldStopAndSpeak) {
-            stopPersonalAssistant();
-            speakAndSetStatus(messageForUser || errorMsgText, false); // Speak the specific user message or generic error
+            stopPersonalAssistant(); // This will also cancel any speech and set isCurrentlySpeaking to false
+            speakAndSetStatus(messageForUser || errorMsgText, false); 
             return;
         }
 
-        // For other errors or if assistant is still active and not stopping
         if (isAssistantActive) {
             const fullErrorToSpeak = (messageForUser || errorMsgText) + " Let me try listening again.";
-            setStatusMessage(fullErrorToSpeak); // Update UI text
-            speakText(fullErrorToSpeak, () => { // Speak error explanation and retry intention
+            setStatusMessage(fullErrorToSpeak); 
+            setIsCurrentlySpeaking(true);
+            speakText(fullErrorToSpeak, () => { 
+                if (mountedRef.current) setIsCurrentlySpeaking(false);
                 if (mountedRef.current) {
                     if (speechRecognitionRef.current && isAssistantActive) {
-                        setStatusMessage("Listening..."); // Update UI for listening state
+                        setStatusMessage("Listening..."); 
                         speechRecognitionRef.current?.start();
-                    } else if (mountedRef.current) { // If something changed (e.g. assistant stopped)
-                        stopPersonalAssistant(); // Ensure it's stopped if it can't restart
+                    } else if (mountedRef.current) { 
+                        stopPersonalAssistant(); 
                         speakAndSetStatus("Assistant stopped due to an unexpected issue.", false);
                     }
                 }
@@ -472,10 +520,10 @@ const AssistiveHomePage: React.FC = () => {
         }
       },
       () => {
-        // onEnd callback for startSpeechRecognition itself - usually not needed for continuous loop
+        // onEnd callback for startSpeechRecognition itself
       }
     );
-  }, [isCameraActive, speakAndSetStatus, toast, isAssistantActive, stopPersonalAssistant]);
+  }, [isCameraActive, speakAndSetStatus, toast, isAssistantActive, stopPersonalAssistant, setIsCurrentlySpeaking]);
 
 
   const togglePersonalAssistant = useCallback(() => {
@@ -491,25 +539,82 @@ const AssistiveHomePage: React.FC = () => {
     toggleObjectDetection();
   }, [toggleObjectDetection]);
 
-  const handlePointerDown = useCallback(() => {
+  const handlePointerDown = useCallback((event: React.MouseEvent | React.TouchEvent) => {
     isProcessingHoldRef.current = false;
     if (holdTimeoutRef.current) clearTimeout(holdTimeoutRef.current);
 
+    // For touch events, clientX/Y are on the touch object
+    if ('touches' in event && event.touches.length > 0) {
+        touchStartXRef.current = event.touches[0].clientX;
+        touchStartYRef.current = event.touches[0].clientY;
+    } else if ('clientX' in event) { // For mouse events
+        touchStartXRef.current = event.clientX;
+        touchStartYRef.current = event.clientY;
+    }
+
+
     holdTimeoutRef.current = setTimeout(() => {
-      if (holdTimeoutRef.current) {
-        isProcessingHoldRef.current = true;
+      if (holdTimeoutRef.current) { // Check if not cleared by pointer up (tap) or swipe
+        isProcessingHoldRef.current = true; // Mark that long press is being processed
         togglePersonalAssistant();
       }
-      holdTimeoutRef.current = null;
+      holdTimeoutRef.current = null; // Clear timeout ref after execution or clearing
     }, 700);
   }, [togglePersonalAssistant]);
 
-  const handlePointerUp = useCallback(() => {
-    if (holdTimeoutRef.current) {
+  const handlePointerUp = useCallback((event?: React.MouseEvent | React.TouchEvent) => {
+    const SWIPE_THRESHOLD_Y = 50;
+    const SWIPE_THRESHOLD_X = 75;
+    let wasSwipeInterrupt = false;
+
+    if (event && 'changedTouches' in event && event.changedTouches.length > 0 && touchStartYRef.current !== null && touchStartXRef.current !== null) {
+        const touchEndY = event.changedTouches[0].clientY;
+        const touchEndX = event.changedTouches[0].clientX;
+
+        if (
+          isCurrentlySpeaking &&
+          appModeRef.current === 'assistant' && // Use ref for current app mode
+          isAssistantActive &&
+          touchStartYRef.current - touchEndY > SWIPE_THRESHOLD_Y && // Swiped up
+          Math.abs(touchEndX - touchStartXRef.current) < SWIPE_THRESHOLD_X // Mostly vertical
+        ) {
+          wasSwipeInterrupt = true;
+          window.speechSynthesis.cancel();
+          setIsCurrentlySpeaking(false);
+          
+          if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) {
+            setStatusMessage("Listening..."); // Update UI, don't speak
+            speechRecognitionRef.current.stop(); // Stop current cycle
+            speechRecognitionRef.current.start(); // Restart listening
+          }
+        }
+    }
+    
+    // Clear touch start refs regardless of swipe outcome for this interaction
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+
+    if (wasSwipeInterrupt) {
+      if (holdTimeoutRef.current) {
+        clearTimeout(holdTimeoutRef.current);
+        holdTimeoutRef.current = null;
+      }
+      isProcessingHoldRef.current = false; // Ensure swipe doesn't lead to hold processing
+      return; // Swipe handled, do not proceed with tap/hold release logic
+    }
+
+    // Original pointer up logic for tap or releasing a hold
+    if (holdTimeoutRef.current) { // If timeout still exists, it means it was a tap (not a long press)
       clearTimeout(holdTimeoutRef.current);
       holdTimeoutRef.current = null;
+      // Tap specific logic could go here if needed, but doubleClick handles taps via onDoubleClick
+      // This primarily ensures long press is not triggered if pointer is lifted early.
     }
-  }, []);
+    // isProcessingHoldRef is set true ONLY by the long press timeout.
+    // If it's true here, it means the long press action (togglePersonalAssistant) has already been initiated.
+    // If it's false, it was a tap or swipe.
+    // No specific action needed here for tap as onDoubleClick or swipe logic handles it.
+  }, [isCurrentlySpeaking, isAssistantActive, setIsCurrentlySpeaking, setStatusMessage]);
 
 
   useEffect(() => {
@@ -537,10 +642,10 @@ const AssistiveHomePage: React.FC = () => {
     <div
       className="flex flex-col items-center justify-center min-h-screen w-full bg-background text-foreground p-4 touch-manipulation select-none relative overflow-hidden"
       onDoubleClick={handleDoubleClick}
-      onMouseDown={handlePointerDown}
-      onMouseUp={handlePointerUp}
-      onTouchStart={(e) => { e.preventDefault(); handlePointerDown(); }}
-      onTouchEnd={(e) => { e.preventDefault(); handlePointerUp(); }}
+      onMouseDown={handlePointerDown} // Mouse down initiates long press timer or tap tracking
+      onMouseUp={handlePointerUp}     // Mouse up clears long press timer if it's a tap
+      onTouchStart={(e) => { e.preventDefault(); handlePointerDown(e); }} // Touch start similar to mouse down
+      onTouchEnd={(e) => { e.preventDefault(); handlePointerUp(e); }}   // Touch end handles swipe or clears long press
       aria-label="Assistive Visions Interactive Area"
       role="application"
       tabIndex={0}
@@ -604,7 +709,6 @@ const AssistiveHomePage: React.FC = () => {
            <Activity size={28} className="text-primary absolute top-0 left-0" />
          </div>
        )}
-
     </div>
   );
 };
