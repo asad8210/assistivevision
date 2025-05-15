@@ -382,6 +382,7 @@ const AssistiveHomePage: React.FC = () => {
       (error) => { 
         console.error("Speech recognition error:", error);
         let errorMsg = `Speech recognition error: ${error}.`;
+
         if (error === "no-speech" && isAssistantActive) {
             errorMsg = "Didn't catch that. Tap and hold to try again.";
             stopPersonalAssistant(); 
@@ -391,18 +392,23 @@ const AssistiveHomePage: React.FC = () => {
             errorMsg = "No microphone found or microphone is not working.";
         } else if (error === "not-allowed" || error === "service-not-allowed") {
             errorMsg = "Microphone permission denied. Please enable it in browser settings.";
-            stopPersonalAssistant(); 
+            if(isAssistantActive) stopPersonalAssistant(); 
+            speakAndSetStatus(errorMsg);
+            return;
         } else if (error === "network") {
             errorMsg = "Network error during speech recognition. Please check your connection.";
         }
         
         if (isAssistantActive) { 
-            speakAndSetStatus(errorMsg + " Please try again.");
-            if (error !== "not-allowed" && error !== "service-not-allowed" && error !== "no-speech" && speechRecognitionRef.current) {
+            speakAndSetStatus(errorMsg + " Let me try listening again.");
+            if (speechRecognitionRef.current) {
                 speakAndSetStatus("Listening...", true);
                 speechRecognitionRef.current?.start();
             } else {
-                 stopPersonalAssistant(); 
+                // This case should be rare if stopPersonalAssistant correctly nulls the ref
+                // and sets isAssistantActive to false.
+                speakAndSetStatus("Assistant stopped due to an unexpected issue.", false);
+                stopPersonalAssistant(); 
             }
         }
       },
@@ -536,3 +542,4 @@ const AssistiveHomePage: React.FC = () => {
 };
 
 export default AssistiveHomePage;
+
