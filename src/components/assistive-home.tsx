@@ -1,3 +1,4 @@
+
 "use client";
 
 import type { SpeechRecognitionResult } from "@/lib/speech";
@@ -21,8 +22,8 @@ const AssistiveHomePage: React.FC = () => {
   const captureIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const holdTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastTapTimeRef = useRef<number>(0);
-  const isProcessingHoldRef = useRef<boolean>(false); // Prevents re-triggering hold
+  // lastTapTimeRef removed as it was unused
+  const isProcessingHoldRef = useRef<boolean>(false);
 
   const { toast } = useToast();
 
@@ -31,15 +32,59 @@ const AssistiveHomePage: React.FC = () => {
     if (!isSilent) {
       speakText(text);
     }
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // setStatusMessage and speakText are stable
 
-  // Auditory Welcome
   useEffect(() => {
     const welcomeMessage =
       "Welcome to Assistive Visions. Double tap the screen to identify objects. Tap and hold to speak to your personal assistant.";
     speakAndSetStatus(welcomeMessage);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run once on mount
+  }, []);
+
+
+  const captureAndDescribe = useCallback(async () => {
+    if (videoRef.current && canvasRef.current && videoRef.current.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
+        const videoElement = videoRef.current;
+        if (videoElement.paused) {
+            try {
+                await videoElement.play();
+            } catch (e) {
+                console.warn("Could not resume paused video for capture:", e);
+                speakAndSetStatus("Camera paused, cannot identify objects.", true);
+                return;
+            }
+        }
+
+        const videoWidth = videoElement.videoWidth;
+        const videoHeight = videoElement.videoHeight;
+
+        if (videoWidth === 0 || videoHeight === 0) {
+            console.warn("Video dimensions are zero during capture attempt. Video might not be fully loaded or playing.");
+            return;
+        }
+
+        canvasRef.current.width = videoWidth;
+        canvasRef.current.height = videoHeight;
+        const context = canvasRef.current.getContext("2d");
+
+        if (context) {
+            context.drawImage(videoElement, 0, 0, videoWidth, videoHeight);
+            const imageDataUrl = canvasRef.current.toDataURL("image/jpeg");
+            try {
+                const result = await mockDescribeScene(imageDataUrl);
+                setCurrentObjectDescription(result.description);
+                speakText(result.description);
+            } catch (error) {
+                console.error("Error describing scene:", error);
+                speakAndSetStatus("Could not identify object.");
+                toast({ title: "Object Detection Error", description: String(error), variant: "destructive" });
+            }
+        }
+    } else {
+        // console.warn("Capture preconditions not met: videoRef, canvasRef, or video not ready.");
+    }
+  }, [speakAndSetStatus, toast]);
 
 
   const stopCamera = useCallback(() => {
@@ -51,9 +96,11 @@ const AssistiveHomePage: React.FC = () => {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach((track) => track.stop());
       videoRef.current.srcObject = null;
+       // Explicitly remove event listeners if they were added and not {once:true} or cleaned up elsewhere
+      // However, current startCamera design aims to clean up its own listeners.
     }
     setIsCameraActive(false);
-    if (!isAssistantActive) { // Only reset status if assistant isn't also using it
+    if (!isAssistantActive) {
         speakAndSetStatus("Camera off. Double tap for camera, tap & hold for assistant.");
     }
     setCurrentObjectDescription("");
@@ -65,47 +112,94 @@ const AssistiveHomePage: React.FC = () => {
       toast({ title: "Error", description: "Camera not supported.", variant: "destructive" });
       return;
     }
+
+    if (isCameraActive) return; // Already active
+
+    // Cleanup previous state
+    if (captureIntervalRef.current) clearInterval(captureIntervalRef.current);
+    captureIntervalRef.current = null;
+    if (videoRef.current && videoRef.current.srcObject) {
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+        videoRef.current.srcObject = null;
+    }
+
     try {
+      speakAndSetStatus("Initializing camera...", true);
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(err => console.error("Video play error:", err));
-      }
-      setIsCameraActive(true);
-      speakAndSetStatus("Camera active. Point to objects. Double tap to stop.");
-
-      captureIntervalRef.current = setInterval(async () => {
-        if (videoRef.current && canvasRef.current && videoRef.current.readyState >= videoRef.current.HAVE_ENOUGH_DATA) {
-          const videoWidth = videoRef.current.videoWidth;
-          const videoHeight = videoRef.current.videoHeight;
-          if (videoWidth === 0 || videoHeight === 0) return;
-
-          canvasRef.current.width = videoWidth;
-          canvasRef.current.height = videoHeight;
-          const context = canvasRef.current.getContext("2d");
-          if (context) {
-            context.drawImage(videoRef.current, 0, 0, videoWidth, videoHeight);
-            const imageDataUrl = canvasRef.current.toDataURL("image/jpeg");
-            try {
-              // speakAndSetStatus("Identifying object...", true); // Silent status update
-              const result = await mockDescribeScene(imageDataUrl);
-              setCurrentObjectDescription(result.description);
-              speakText(result.description);
-            } catch (error) {
-              console.error("Error describing scene:", error);
-              speakAndSetStatus("Could not identify object.");
-              toast({ title: "Object Detection Error", description: String(error), variant: "destructive" });
+        const videoElement = videoRef.current;
+        videoElement.srcObject = stream;
+        
+        let canPlaySetupDone = false;
+        
+        const canPlayTimeoutId = setTimeout(() => {
+            videoElement.removeEventListener("canplay", handleCanPlayAsync);
+            if (!canPlaySetupDone) {
+                 console.warn("Camera 'canplay' event timed out.");
+                 speakAndSetStatus("Camera timed out. Please try again.");
+                 toast({ title: "Camera Error", description: "Timeout waiting for video data.", variant: "destructive" });
+                 stream.getTracks().forEach((track) => track.stop());
+                 if (videoRef.current) videoRef.current.srcObject = null;
+                 setIsCameraActive(false);
             }
+        }, 10000); // 10 second timeout
+
+        const handleCanPlayAsync = async () => {
+          clearTimeout(canPlayTimeoutId);
+          if (canPlaySetupDone || !videoRef.current || videoRef.current.srcObject !== stream) { // Check if already run or stream changed
+            if (videoRef.current && videoRef.current.srcObject !== stream && stream.active) { // Stale call, new stream might be starting
+                stream.getTracks().forEach(track => track.stop()); // Stop this unused stream
+            }
+            return;
           }
-        }
-      }, 5000); // Capture frame every 5 seconds
-    } catch (err) {
-      console.error("Error accessing camera:", err);
-      speakAndSetStatus("Could not access camera. Please check permissions.");
-      toast({ title: "Camera Error", description: "Please grant camera permission.", variant: "destructive" });
+          canPlaySetupDone = true;
+
+          try {
+            await videoElement.play();
+            setIsCameraActive(true); 
+            speakAndSetStatus("Camera active. Point to objects. Double tap to stop.");
+            await captureAndDescribe(); 
+
+            if (captureIntervalRef.current) clearInterval(captureIntervalRef.current);
+            captureIntervalRef.current = setInterval(captureAndDescribe, 5000);
+
+          } catch (playError) {
+            console.error("Video play error:", playError);
+            speakAndSetStatus("Could not start camera video.");
+            toast({ title: "Camera Playback Error", description: String(playError), variant: "destructive" });
+            setIsCameraActive(false); 
+            stream.getTracks().forEach((track) => track.stop());
+            if (videoRef.current) videoRef.current.srcObject = null;
+          }
+        };
+        
+        videoElement.addEventListener("canplay", handleCanPlayAsync, { once: true });
+        videoElement.load(); // Request browser to load video metadata
+
+      } else {
+         stream.getTracks().forEach((track) => track.stop());
+      }
+    } catch (err: any) {
+      console.error("Error accessing camera (getUserMedia):", err);
+      let userMessage = "Could not access camera. Please check permissions.";
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        userMessage = "Camera permission denied. Please enable it in browser settings.";
+      } else if (err.name === "NotFoundError") {
+        userMessage = "No camera found. Ensure a camera is connected and enabled.";
+      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+        userMessage = "Camera is already in use or a hardware error occurred.";
+      } else if (err.name === "OverconstrainedError"){
+        userMessage = "No camera found that meets the requirements (e.g. facing mode).";
+      } else if (err.name === "TypeError"){
+         userMessage = "Camera features not correctly specified or an issue with device enumeration.";
+      }
+      speakAndSetStatus(userMessage);
+      toast({ title: "Camera Access Error", description: err.message || userMessage, variant: "destructive" });
       setIsCameraActive(false);
     }
-  }, [speakAndSetStatus, toast]);
+  }, [speakAndSetStatus, toast, captureAndDescribe, isCameraActive, setIsCameraActive]);
+
 
   const toggleObjectDetection = useCallback(() => {
     if (isAssistantActive) {
@@ -122,11 +216,11 @@ const AssistiveHomePage: React.FC = () => {
 
   const stopPersonalAssistant = useCallback(() => {
     if (speechRecognitionRef.current) {
-      speechRecognitionRef.current.stop();
+      speechRecognitionRef.current.stop(); // Use stop for graceful shutdown
       speechRecognitionRef.current = null;
     }
     setIsAssistantActive(false);
-    if (!isCameraActive) { // Only reset status if camera isn't also using it
+    if (!isCameraActive) {
         speakAndSetStatus("Assistant off. Double tap for camera, tap & hold for assistant.");
     }
   }, [isCameraActive, speakAndSetStatus]);
@@ -147,57 +241,81 @@ const AssistiveHomePage: React.FC = () => {
             let locationString: string | undefined;
             try {
               const position = await new Promise<GeolocationPosition>((resolve, reject) => 
-                navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 })
+                navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000, enableHighAccuracy: true })
               );
               locationString = `Lat: ${position.coords.latitude.toFixed(2)}, Lon: ${position.coords.longitude.toFixed(2)}`;
-            } catch (geoError) {
+            } catch (geoError: any) {
               console.warn("Could not get location:", geoError);
-              toast({ title: "Location", description: "Could not get location. Proceeding without it.", variant: "default" });
+              let geoErrorMessage = "Could not get location. Proceeding without it.";
+              if (geoError.code === geoError.PERMISSION_DENIED) {
+                geoErrorMessage = "Location permission denied. Proceeding without it.";
+              } else if (geoError.code === geoError.POSITION_UNAVAILABLE) {
+                geoErrorMessage = "Location information is unavailable. Proceeding without it.";
+              } else if (geoError.code === geoError.TIMEOUT) {
+                geoErrorMessage = "Location request timed out. Proceeding without it.";
+              }
+              toast({ title: "Location", description: geoErrorMessage, variant: "default" });
             }
 
             const assistantResponse = await personalAssistant({ speech: result.transcript, location: locationString });
-            speakAndSetStatus(assistantResponse.response);
-            speakText(assistantResponse.response, () => {
-              // If still active, listen again
-              if (isAssistantActive && speechRecognitionRef.current) { // Check isAssistantActive again
-                 speakAndSetStatus("Listening...");
+            speakAndSetStatus(assistantResponse.response); // This speaks and sets status
+            // No explicit speakText(assistantResponse.response, ...) needed here if speakAndSetStatus handles it
+
+            // Check if still active before trying to listen again
+             if (speechRecognitionRef.current && isAssistantActive) {
+                 speakAndSetStatus("Listening...", true); // Silent, as main response was just spoken
                  speechRecognitionRef.current?.start();
-              } else if (!isAssistantActive) {
-                 stopPersonalAssistant(); // Ensure clean stop if deactivated during speech
-              }
-            });
+             } else if (!isAssistantActive) {
+                 stopPersonalAssistant();
+             }
+
           } catch (apiError) {
             console.error("Personal assistant API error:", apiError);
             speakAndSetStatus("Sorry, I couldn't process that. Please try again.");
             toast({ title: "Assistant Error", description: String(apiError), variant: "destructive" });
-            // If still active, listen again after error
-            if (isAssistantActive && speechRecognitionRef.current) {
-               speakAndSetStatus("Listening...");
+            if (speechRecognitionRef.current && isAssistantActive) {
+               speakAndSetStatus("Listening...", true);
                speechRecognitionRef.current?.start();
             }
           }
         } else {
+          // Only update status message for interim results, don't speak them
           setStatusMessage(`Heard: "${result.transcript}"...`);
         }
       },
-      (error) => {
+      (error) => { // onError for speech recognition
         console.error("Speech recognition error:", error);
-        if (error !== "no-speech" && error !== "aborted" && error !== "audio-capture" && error !== "network") {
-            speakAndSetStatus(`Speech recognition error: ${error}. Please try again.`);
-        } else if (error === "no-speech" && isAssistantActive) {
-           // speakAndSetStatus("Didn't catch that. Try speaking again.", true);
+        let errorMsg = `Speech recognition error: ${error}.`;
+        if (error === "no-speech" && isAssistantActive) {
+            errorMsg = "Didn't catch that. Tap and hold to try again.";
+             // Don't automatically restart on no-speech, let user re-initiate.
+            stopPersonalAssistant(); // Stop assistant on no-speech to avoid continuous "listening" prompts
+            speakAndSetStatus(errorMsg); // Speak this specific feedback
+            return;
+        } else if (error === "audio-capture") {
+            errorMsg = "No microphone found or microphone is not working.";
+        } else if (error === "not-allowed" || error === "service-not-allowed") {
+            errorMsg = "Microphone permission denied. Please enable it in browser settings.";
+            stopPersonalAssistant(); // Stop assistant if permission denied
+        } else if (error === "network") {
+            errorMsg = "Network error during speech recognition. Please check your connection.";
         }
-        // If still active, attempt to restart, unless error is critical like "not-allowed"
-        if (isAssistantActive && error !== "not-allowed" && error !== "service-not-allowed" && speechRecognitionRef.current) {
-            speakAndSetStatus("Listening...");
-            speechRecognitionRef.current?.start();
-        } else if (isAssistantActive) {
-            stopPersonalAssistant(); // Stop if critical error
+        
+        if (isAssistantActive) { // If error wasn't handled by specific cases above stopping the assistant
+            speakAndSetStatus(errorMsg + " Please try again.");
+            // Attempt to restart unless critical error like "not-allowed" handled above
+            if (error !== "not-allowed" && error !== "service-not-allowed" && error !== "no-speech" && speechRecognitionRef.current) {
+                speakAndSetStatus("Listening...", true);
+                speechRecognitionRef.current?.start();
+            } else {
+                 stopPersonalAssistant(); // Ensure it's stopped for other critical/unhandled errors
+            }
         }
       },
-      () => { // onEnd
-        // This onEnd is called when recognition stops. If assistant is still active, we restart it in the onResult handler.
-        // If it was stopped intentionally (isAssistantActive is false), stopPersonalAssistant would have been called.
+      () => { // onEnd for speech recognition
+        // If assistant is still meant to be active (e.g. after a successful recognition and response),
+        // it's restarted in the onResult handler.
+        // If it stopped due to an error that calls stopPersonalAssistant, or user action, this is fine.
       }
     );
   }, [isCameraActive, speakAndSetStatus, toast, isAssistantActive, stopPersonalAssistant]);
@@ -211,24 +329,22 @@ const AssistiveHomePage: React.FC = () => {
     }
   }, [isAssistantActive, startPersonalAssistant, stopPersonalAssistant]);
 
-  // Gesture Handling
   const handleDoubleClick = useCallback(() => {
-    if (isProcessingHoldRef.current) return; // If a hold was just processed, ignore double tap
+    if (isProcessingHoldRef.current) return;
     toggleObjectDetection();
   }, [toggleObjectDetection]);
 
   const handlePointerDown = useCallback(() => {
     isProcessingHoldRef.current = false;
-    // Clear any previous tap timers to prevent single tap firing after hold.
     if (holdTimeoutRef.current) clearTimeout(holdTimeoutRef.current);
     
     holdTimeoutRef.current = setTimeout(() => {
-      if (holdTimeoutRef.current) { // Check if it wasn't cleared by pointer up
-        isProcessingHoldRef.current = true; // Mark that a hold is being processed
+      if (holdTimeoutRef.current) { 
+        isProcessingHoldRef.current = true; 
         togglePersonalAssistant();
       }
       holdTimeoutRef.current = null;
-    }, 700); // 700ms for hold
+    }, 700); 
   }, [togglePersonalAssistant]);
 
   const handlePointerUp = useCallback(() => {
@@ -236,24 +352,18 @@ const AssistiveHomePage: React.FC = () => {
       clearTimeout(holdTimeoutRef.current);
       holdTimeoutRef.current = null;
     }
-    // Logic for differentiating single tap vs. double tap (if not using onDoubleClick)
-    // For simplicity, we rely on onDoubleClick for double taps.
-    // If onDoubleClick is not reliable on all devices, more complex tap detection is needed here.
   }, []);
 
 
   useEffect(() => {
-    // Cleanup function
     return () => {
       if (captureIntervalRef.current) clearInterval(captureIntervalRef.current);
-      if (speechRecognitionRef.current) speechRecognitionRef.current.abort();
+      if (speechRecognitionRef.current) speechRecognitionRef.current.abort(); // Use abort for immediate stop
       if (holdTimeoutRef.current) clearTimeout(holdTimeoutRef.current);
-      // Stop any active camera stream
       if (videoRef.current && videoRef.current.srcObject) {
         const stream = videoRef.current.srcObject as MediaStream;
         stream.getTracks().forEach(track => track.stop());
       }
-      // Cancel any ongoing speech synthesis
       if (typeof window !== "undefined" && window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
@@ -264,29 +374,30 @@ const AssistiveHomePage: React.FC = () => {
     <div
       className="flex flex-col items-center justify-center min-h-screen w-full bg-background text-foreground p-4 touch-manipulation select-none relative overflow-hidden"
       onDoubleClick={handleDoubleClick}
-      onMouseDown={handlePointerDown}
-      onMouseUp={handlePointerUp}
-      onTouchStart={(e) => { e.preventDefault(); handlePointerDown(); }} // Prevent default to avoid issues like zoom on double tap
+      onMouseDown={handlePointerDown} // Using onMouseDown for desktop simplicity
+      onMouseUp={handlePointerUp}     // Using onMouseUp for desktop simplicity
+      onTouchStart={(e) => { e.preventDefault(); handlePointerDown(); }} 
       onTouchEnd={(e) => { e.preventDefault(); handlePointerUp(); }}
       aria-label="Assistive Visions Interactive Area"
       role="application"
+      tabIndex={0} // Make div focusable for accessibility, though primary interaction is touch/mouse
     >
-      {isCameraActive && (
-        <video
-          ref={videoRef}
-          className="absolute top-0 left-0 w-full h-full object-cover z-0"
-          autoPlay
-          playsInline
-          muted // Mute video to prevent echo if mic is also active, though typically not simultaneously
-          aria-label="Live camera feed for object detection"
-        />
-      )}
+      {/* Video element is always in the DOM but hidden if not active, srcObject controls visibility */}
+      <video
+        ref={videoRef}
+        className={`absolute top-0 left-0 w-full h-full object-cover z-0 ${isCameraActive ? 'block' : 'hidden'}`}
+        autoPlay
+        playsInline
+        muted 
+        aria-hidden={!isCameraActive} // Hide from screen readers if not active
+        aria-label="Live camera feed for object detection"
+      />
       <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
 
       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-6 pointer-events-none">
         <div 
-          className="text-center bg-black/30 p-4 rounded-lg shadow-xl max-w-md backdrop-blur-sm"
-          aria-live="assertive"
+          className="text-center bg-black/50 p-4 rounded-lg shadow-xl max-w-md backdrop-blur-sm"
+          aria-live="assertive" // Announces changes to screen readers
           aria-atomic="true"
         >
           <p className="text-2xl font-semibold mb-2">{statusMessage}</p>
@@ -302,11 +413,9 @@ const AssistiveHomePage: React.FC = () => {
         {!isCameraActive && !isAssistantActive && <Info size={32} className="opacity-70" />}
       </div>
       
-      {/* Icon indicating auditory feedback is active */}
       <div className="absolute top-6 right-6 z-20 pointer-events-none">
          <Volume2 size={28} className="text-accent" />
       </div>
-       {/* Activity Indicator */}
        {(isCameraActive || isAssistantActive) && (
          <div className="absolute top-6 left-6 z-20 pointer-events-none">
            <Activity size={28} className="text-primary animate-ping opacity-75" />
@@ -319,3 +428,5 @@ const AssistiveHomePage: React.FC = () => {
 };
 
 export default AssistiveHomePage;
+
+    
