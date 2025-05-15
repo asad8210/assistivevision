@@ -17,6 +17,11 @@ import type * as cocoSsd from "@tensorflow-models/coco-ssd";
 import '@tensorflow/tfjs-backend-cpu';
 import '@tensorflow/tfjs-backend-webgl';
 
+const DOUBLE_TAP_THRESHOLD = 300; // milliseconds
+const LONG_PRESS_DURATION = 700; // milliseconds
+const SWIPE_THRESHOLD_Y = 50; // Min vertical distance for a swipe
+const SWIPE_THRESHOLD_X = 75; // Max horizontal distance for a vertical swipe
+
 
 const AssistiveHomePage: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState<string>(
@@ -44,6 +49,7 @@ const AssistiveHomePage: React.FC = () => {
 
   const touchStartYRef = useRef<number | null>(null);
   const touchStartXRef = useRef<number | null>(null);
+  const lastTapTimeRef = useRef(0);
 
 
   const { toast } = useToast();
@@ -441,12 +447,11 @@ const AssistiveHomePage: React.FC = () => {
             setIsCurrentlySpeaking(true);
             speakText(assistantResponse.response, () => { 
               if (mountedRef.current) setIsCurrentlySpeaking(false);
-              // Key change: If assistant is still active, go back to listening
-              if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) { // Check isAssistantActive directly
+              if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) { 
                  setStatusMessage("Listening..."); 
                  speechRecognitionRef.current?.start();
-              } else if (!isAssistantActive && mountedRef.current) { // If assistant was deactivated during speech
-                 stopPersonalAssistant(); // Ensure proper cleanup
+              } else if (!isAssistantActive && mountedRef.current) { 
+                 stopPersonalAssistant(); 
               }
             });
 
@@ -462,7 +467,6 @@ const AssistiveHomePage: React.FC = () => {
             toast({ title: "Assistant Error", description: apiError.message || String(apiError), variant: "destructive" });
             speakText(errorMsg, () => { 
                 if(mountedRef.current) setIsCurrentlySpeaking(false);
-                // Key change: If assistant is still active, go back to listening
                 if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) {
                    setStatusMessage("Listening..."); 
                    speechRecognitionRef.current?.start();
@@ -480,10 +484,8 @@ const AssistiveHomePage: React.FC = () => {
         let shouldStopAndSpeak = false;
         let messageForUser = "";
 
-        if (error === "no-speech" && isAssistantActive) { // Check isAssistantActive
+        if (error === "no-speech" && isAssistantActive) { 
             messageForUser = "Didn't catch that. Tap and hold to try again or just speak.";
-            // Don't stop for no-speech if assistant is meant to be continuously listening
-            // Instead, just prompt to try again or speak.
         } else if (error === "audio-capture") {
             messageForUser = "No microphone found or microphone is not working. Please check your microphone.";
             shouldStopAndSpeak = true; 
@@ -492,19 +494,16 @@ const AssistiveHomePage: React.FC = () => {
             shouldStopAndSpeak = true;
         } else if (error === "network") {
             messageForUser = "Network error during speech recognition. Please check your connection.";
-             // Potentially recoverable, so don't stop, just inform and try again.
         }
 
 
         if (shouldStopAndSpeak) {
             stopPersonalAssistant(); 
-            // speakAndSetStatus will set isCurrentlySpeaking true, then false in callback
             speakAndSetStatus(messageForUser || errorMsgText, false); 
-            return; // Exit, assistant is stopped.
+            return; 
         }
         
-        // For recoverable errors or "no-speech" in continuous mode
-        if (isAssistantActive && mountedRef.current) { // Check isAssistantActive again
+        if (isAssistantActive && mountedRef.current) { 
             const fullErrorToSpeak = (messageForUser || errorMsgText) + (error === "no-speech" ? "" : " Let me try listening again.");
             setStatusMessage(fullErrorToSpeak); 
             setIsCurrentlySpeaking(true);
@@ -514,24 +513,19 @@ const AssistiveHomePage: React.FC = () => {
                     setStatusMessage("Listening..."); 
                     speechRecognitionRef.current?.start();
                 } else if (mountedRef.current) { 
-                    // If assistant became inactive for some reason during speech
                     stopPersonalAssistant(); 
                 }
             });
         }
       },
       () => { // onEnd of speech recognition itself
-        // This is called when recognition stops. If assistant is still active, we might want to restart.
-        // However, our current logic restarts it after speaking or in error cases explicitly.
-        // If it ends naturally and isAssistantActive is true, but no result was final, it might mean it timed out.
-        // The browser's default timeout is quite long. "no-speech" error handles short silences.
       }
     );
   }, [speakAndSetStatus, toast, isAssistantActive, stopPersonalAssistant, setIsCurrentlySpeaking, setStatusMessage]);
 
 
   const togglePersonalAssistant = useCallback(() => {
-    if (isProcessingHoldRef.current) return; // Don't toggle if a double tap is being processed as hold
+    if (isProcessingHoldRef.current) return; 
     if (isAssistantActive) {
       stopPersonalAssistant();
     } else {
@@ -563,29 +557,29 @@ const AssistiveHomePage: React.FC = () => {
         togglePersonalAssistant();
       }
       holdTimeoutRef.current = null; 
-    }, 700);
+      lastTapTimeRef.current = 0; 
+    }, LONG_PRESS_DURATION);
   }, [togglePersonalAssistant]);
 
   const handleTapOrClick = useCallback(() => {
     const now = Date.now();
     if (now - lastTapTimeRef.current < DOUBLE_TAP_THRESHOLD) {
-      if (longPressTimeoutRef.current) {
-        clearTimeout(longPressTimeoutRef.current);
-        longPressTimeoutRef.current = null;
+      if (holdTimeoutRef.current) {
+        clearTimeout(holdTimeoutRef.current);
+        holdTimeoutRef.current = null;
       }
       handleDoubleClick();
-      lastTapTimeRef.current = 0; // Reset for next double tap
+      lastTapTimeRef.current = 0; 
     } else {
       lastTapTimeRef.current = now;
-      // If assistant is speaking and user taps, interrupt speech and go back to listening.
       if (appModeRef.current === 'assistant' && isCurrentlySpeaking) {
           window.speechSynthesis.cancel();
-          setIsCurrentlySpeaking(false); // Update speaking state
+          setIsCurrentlySpeaking(false); 
 
-          if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) { // Check isAssistantActive directly
-              setStatusMessage("Listening..."); // Update UI
-              speechRecognitionRef.current.stop(); // Ensure current recognition cycle stops
-              speechRecognitionRef.current.start(); // Restart listening
+          if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) { 
+              setStatusMessage("Listening..."); 
+              speechRecognitionRef.current.stop(); 
+              speechRecognitionRef.current.start(); 
           }
       }
     }
@@ -593,8 +587,6 @@ const AssistiveHomePage: React.FC = () => {
 
 
   const handlePointerUp = useCallback((event?: React.MouseEvent | React.TouchEvent) => {
-    const SWIPE_THRESHOLD_Y = 50; // Min vertical distance for a swipe
-    const SWIPE_THRESHOLD_X = 75; // Max horizontal distance for a vertical swipe
     let wasSwipeInterrupt = false;
 
     if (event && 'changedTouches' in event && event.changedTouches.length > 0 && touchStartYRef.current !== null && touchStartXRef.current !== null) {
@@ -604,7 +596,7 @@ const AssistiveHomePage: React.FC = () => {
         if (
           isCurrentlySpeaking &&
           appModeRef.current === 'assistant' &&
-          isAssistantActive && // Ensure assistant is active
+          isAssistantActive && 
           touchStartYRef.current - touchEndY > SWIPE_THRESHOLD_Y && 
           Math.abs(touchEndX - touchStartXRef.current) < SWIPE_THRESHOLD_X 
         ) {
@@ -635,13 +627,8 @@ const AssistiveHomePage: React.FC = () => {
     if (holdTimeoutRef.current) { 
       clearTimeout(holdTimeoutRef.current);
       holdTimeoutRef.current = null;
-      // This means it was a tap, not a long press. Call handleTapOrClick.
       handleTapOrClick();
     }
-    // If holdTimeoutRef.current is null here, it means either:
-    // 1. It was a long press and togglePersonalAssistant() was already called.
-    // 2. It was cleared by a swipe.
-    // isProcessingHoldRef is set true ONLY by the long press timeout.
   }, [isCurrentlySpeaking, isAssistantActive, setIsCurrentlySpeaking, setStatusMessage, handleTapOrClick]);
 
 
@@ -666,20 +653,18 @@ const AssistiveHomePage: React.FC = () => {
     };
   }, []);
 
-  // Effect to manage detection interval based on camera active state & other conditions
   useEffect(() => {
     if (isCameraActive && appModeRef.current === 'camera' && !isGeneratingDetailedDescription && !isCurrentlySpeaking) {
-      if (!detectionIntervalRef.current) { // Start interval if not already running
-        detectAndDescribeObjects(); // Initial call
+      if (!detectionIntervalRef.current) { 
+        detectAndDescribeObjects(); 
         detectionIntervalRef.current = setInterval(detectAndDescribeObjects, 3000);
       }
     } else {
-      if (detectionIntervalRef.current) { // Clear interval if conditions not met
+      if (detectionIntervalRef.current) { 
         clearInterval(detectionIntervalRef.current);
         detectionIntervalRef.current = null;
       }
     }
-    // Cleanup interval on effect unmount or when dependencies change
     return () => {
       if (detectionIntervalRef.current) {
         clearInterval(detectionIntervalRef.current);
@@ -692,48 +677,47 @@ const AssistiveHomePage: React.FC = () => {
   return (
     <div
       className="flex flex-col items-center justify-center min-h-screen w-full bg-background text-foreground p-4 touch-manipulation select-none relative overflow-hidden"
-      // onDoubleClick is handled by tap/click logic now
       onMouseDown={handlePointerDown} 
       onMouseUp={handlePointerUp}     
-      onTouchStart={(e) => {  handlePointerDown(e); }} // Removed preventDefault to allow native scroll if needed, though overflow is hidden
+      onTouchStart={(e) => {  handlePointerDown(e); }} 
       onTouchEnd={(e) => {  handlePointerUp(e); }}   
       aria-label="Assistive Visions Interactive Area"
       role="application"
-      tabIndex={0} // Make it focusable
+      tabIndex={0} 
     >
       <video
         ref={videoRef}
         className={`absolute top-0 left-0 w-full h-full object-cover z-0 ${isCameraActive ? 'block' : 'hidden'}`}
         autoPlay
-        playsInline // Important for iOS
-        muted // Required for autoplay in most browsers
+        playsInline 
+        muted 
         aria-hidden={!isCameraActive}
         aria-label="Live camera feed for object detection"
       />
       <canvas
         ref={canvasRef}
         className={`absolute top-0 left-0 w-full h-full object-cover z-[5] ${isCameraActive && objectDetections.length > 0 ? 'block' : 'hidden'}`}
-        aria-hidden="true" // Decorative, info conveyed by audio/status text
+        aria-hidden="true" 
       />
 
       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-6 pointer-events-none">
         <div
-          className="text-center bg-black/70 p-4 rounded-lg shadow-xl max-w-md backdrop-blur-sm" // Slightly more transparency and blur
-          aria-live="assertive" // Announces changes
-          aria-atomic="true"    // Announces entire region
+          className="text-center bg-black/70 p-4 rounded-lg shadow-xl max-w-md backdrop-blur-sm" 
+          aria-live="assertive" 
+          aria-atomic="true"    
         >
             {isModelLoading ? (
                 <div className="flex items-center justify-center">
                     <Loader2 size={32} className="animate-spin mr-2 text-primary" />
                     <p className="text-xl font-semibold">Loading AI model...</p>
                 </div>
-            ) : ( // Model loaded
+            ) : ( 
                  isGeneratingDetailedDescription && isCameraActive ? (
                     <div className="flex items-center justify-center">
                         <Loader2 size={28} className="animate-spin mr-2 text-accent" />
                         <p className="text-xl font-semibold">Analyzing scene details...</p>
                     </div>
-                ) : ( // Not generating detailed description OR camera not active
+                ) : ( 
                     <p className="text-2xl font-semibold mb-2">{statusMessage}</p>
                 )
             )}
@@ -766,5 +750,7 @@ const AssistiveHomePage: React.FC = () => {
 };
 
 export default AssistiveHomePage;
+
+    
 
     
