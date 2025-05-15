@@ -542,4 +542,3 @@ const AssistiveHomePage: React.FC = () => {
 };
 
 export default AssistiveHomePage;
-
