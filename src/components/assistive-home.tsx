@@ -4,6 +4,7 @@
 import type { SpeechRecognitionResult } from "@/lib/speech";
 import { speakText, startSpeechRecognition } from "@/lib/speech";
 import { personalAssistant } from "@/ai/flows/personal-assistant";
+import { describeDetailedScene, type DescribeDetailedSceneInput, type DescribeDetailedSceneOutput } from "@/ai/flows/describe-detailed-scene-flow";
 import { useToast } from "@/hooks/use-toast";
 import { Mic, Camera, Info, Volume2, Activity, Loader2 } from "lucide-react";
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -23,8 +24,10 @@ const AssistiveHomePage: React.FC = () => {
   );
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
   const [isAssistantActive, setIsAssistantActive] = useState<boolean>(false);
-  const [currentObjectDescription, setCurrentObjectDescription] = useState<string>("");
-  const [isModelLoading, setIsModelLoading] = useState<boolean>(true);
+  const [currentObjectDescription, setCurrentObjectDescription] = useState<string>(""); // For on-screen text from COCO-SSD
+  const [lastSpokenDetailedDescription, setLastSpokenDetailedDescription] = useState<string>("");
+  const [isModelLoading, setIsModelLoading] = useState<boolean>(true); // COCO-SSD model loading
+  const [isGeneratingDetailedDescription, setIsGeneratingDetailedDescription] = useState<boolean>(false);
   const [objectDetections, setObjectDetections] = useState<cocoSsd.DetectedObject[]>([]);
 
 
@@ -46,11 +49,10 @@ const AssistiveHomePage: React.FC = () => {
     }
   }, []);
 
-  // Load COCO-SSD model
   useEffect(() => {
     async function loadModel() {
       try {
-        await tf.ready(); // Ensure TensorFlow.js is ready
+        await tf.ready(); 
         const loadedModel = await (await import('@tensorflow-models/coco-ssd')).load();
         modelRef.current = loadedModel;
         setIsModelLoading(false);
@@ -60,7 +62,7 @@ const AssistiveHomePage: React.FC = () => {
         console.error("Error loading COCO-SSD model:", error);
         speakAndSetStatus("Failed to load AI model. Object detection unavailable.");
         toast({ title: "Model Load Error", description: String(error), variant: "destructive" });
-        setIsModelLoading(false); // Still set to false to unblock UI, even if failed
+        setIsModelLoading(false);
       }
     }
     loadModel();
@@ -70,13 +72,13 @@ const AssistiveHomePage: React.FC = () => {
   useEffect(() => {
     const welcomeMessage =
       "Welcome to Assistive Visions. Double tap the screen to identify objects. Tap and hold to speak to your personal assistant.";
-    if (!isModelLoading) { // Only speak welcome if model isn't taking long to load
+    if (!isModelLoading) { 
         speakAndSetStatus(welcomeMessage);
     } else {
         setStatusMessage("Loading AI model for object detection...");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isModelLoading]); // Dependency on isModelLoading
+  }, [isModelLoading]); 
 
 
   const drawBoundingBoxes = useCallback((predictions: cocoSsd.DetectedObject[]) => {
@@ -87,10 +89,7 @@ const AssistiveHomePage: React.FC = () => {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Clear previous drawings
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Font for labels
     const font = "16px sans-serif";
     ctx.font = font;
     ctx.textBaseline = "top";
@@ -98,72 +97,97 @@ const AssistiveHomePage: React.FC = () => {
     predictions.forEach(prediction => {
       const [x, y, width, height] = prediction.bbox;
       const label = `${prediction.class} (${Math.round(prediction.score * 100)}%)`;
-
-      // Bounding box
-      ctx.strokeStyle = "#00FFFF"; // Cyan
+      ctx.strokeStyle = "#00FFFF"; 
       ctx.lineWidth = 2;
       ctx.strokeRect(x, y, width, height);
-
-      // Background for label
       ctx.fillStyle = "#00FFFF";
       const textWidth = ctx.measureText(label).width;
       ctx.fillRect(x, y, textWidth + 4, 18);
-
-      // Label text
-      ctx.fillStyle = "#000000"; // Black text
+      ctx.fillStyle = "#000000"; 
       ctx.fillText(label, x + 2, y + 2);
     });
   }, []);
 
 
   const detectAndDescribeObjects = useCallback(async () => {
-    if (modelRef.current && videoRef.current && canvasRef.current && videoRef.current.readyState >= HTMLMediaElement.HAVE_ENOUGH_DATA) {
-        const videoElement = videoRef.current;
-        if (videoElement.paused) {
-            try {
-                await videoElement.play();
-            } catch (e) {
-                console.warn("Could not resume paused video for detection:", e);
-                // Do not speak here to avoid interrupting other feedback
-                return;
-            }
+    if (!modelRef.current || !videoRef.current || !canvasRef.current || videoRef.current.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA) {
+        return;
+    }
+    
+    const videoElement = videoRef.current;
+    if (videoElement.paused) {
+        try { await videoElement.play(); } catch (e) { console.warn("Could not resume paused video for detection:", e); return; }
+    }
+
+    if (videoElement.videoWidth === 0 || videoElement.videoHeight === 0) {
+        console.warn("Video dimensions are zero during detection attempt.");
+        return;
+    }
+    
+    if (canvasRef.current) {
+        canvasRef.current.width = videoElement.videoWidth;
+        canvasRef.current.height = videoElement.videoHeight;
+    }
+
+    // COCO-SSD for bounding boxes and simple on-screen description
+    try {
+        const predictions = await modelRef.current.detect(videoElement);
+        setObjectDetections(predictions); 
+        drawBoundingBoxes(predictions);
+
+        if (predictions.length > 0) {
+            const distinctObjects = [...new Set(predictions.map(p => p.class))];
+            const cocoDescription = "I see " + distinctObjects.slice(0, 3).join(", ") + ".";
+            setCurrentObjectDescription(cocoDescription);
+        } else {
+            setCurrentObjectDescription("No objects detected by local model.");
         }
+    } catch (cocoError) {
+        console.error("Error during COCO-SSD object detection:", cocoError);
+        setCurrentObjectDescription("Error in local object detection.");
+    }
 
-        const videoWidth = videoElement.videoWidth;
-        const videoHeight = videoElement.videoHeight;
+    // Genkit flow for detailed spoken description
+    if (!isGeneratingDetailedDescription && videoRef.current) {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = videoElement.videoWidth;
+        tempCanvas.height = videoElement.videoHeight;
+        const tempCtx = tempCanvas.getContext('2d');
 
-        if (videoWidth === 0 || videoHeight === 0) {
-            console.warn("Video dimensions are zero during detection attempt.");
-            return;
-        }
-        
-        // Ensure canvas matches video dimensions for accurate drawing
-        canvasRef.current.width = videoWidth;
-        canvasRef.current.height = videoHeight;
+        if (tempCtx) {
+            tempCtx.drawImage(videoElement, 0, 0, tempCanvas.width, tempCanvas.height);
+            const frameDataUri = tempCanvas.toDataURL('image/jpeg', 0.8); 
 
-        try {
-            const predictions = await modelRef.current.detect(videoElement);
-            setObjectDetections(predictions); // Store for potential display
-            drawBoundingBoxes(predictions);
+            if (frameDataUri) {
+                setIsGeneratingDetailedDescription(true);
+                try {
+                    const flowInput: DescribeDetailedSceneInput = {
+                        photoDataUri: frameDataUri,
+                        previousDetailedDescription: lastSpokenDetailedDescription || undefined,
+                    };
+                    const output: DescribeDetailedSceneOutput = await describeDetailedScene(flowInput);
 
-            if (predictions.length > 0) {
-                const distinctObjects = [...new Set(predictions.map(p => p.class))];
-                const description = "I see " + distinctObjects.slice(0, 3).join(", ") + ".";
-                setCurrentObjectDescription(description);
-                speakText(description);
-            } else {
-                setCurrentObjectDescription("No objects detected.");
-                // Optionally speak "No objects detected" or remain silent
-                // speakText("No objects detected."); 
+                    if (output.detailedDescription && output.detailedDescription.trim() !== "" && output.detailedDescription !== lastSpokenDetailedDescription) {
+                        setLastSpokenDetailedDescription(output.detailedDescription);
+                        speakText(output.detailedDescription);
+                    } else if (!output.detailedDescription || output.detailedDescription.trim() === "") {
+                        // If detailed description is empty, consider not saying anything or a fallback.
+                        // For now, let COCO-SSD's status remain if nothing new to say.
+                    }
+                } catch (flowError: any) {
+                    console.error("Error calling describeDetailedSceneFlow:", flowError);
+                    const errorMsg = flowError.message?.includes("API key not valid") 
+                        ? "AI service API key is not valid. Please check your configuration."
+                        : "Sorry, I couldn't get a detailed description of the scene at the moment.";
+                    speakText(errorMsg);
+                    toast({ title: "Detailed Description Error", description: flowError.message || "Unknown error from AI flow.", variant: "destructive"});
+                } finally {
+                    setIsGeneratingDetailedDescription(false);
+                }
             }
-        } catch (error) {
-            console.error("Error during object detection:", error);
-            // Do not speak here to avoid interrupting other feedback
-            // speakAndSetStatus("Could not detect objects."); 
-            // toast({ title: "Object Detection Error", description: String(error), variant: "destructive" });
         }
     }
-  }, [drawBoundingBoxes]);
+  }, [drawBoundingBoxes, isGeneratingDetailedDescription, lastSpokenDetailedDescription, toast]);
 
 
   const stopCamera = useCallback(() => {
@@ -187,6 +211,8 @@ const AssistiveHomePage: React.FC = () => {
         speakAndSetStatus("Camera off. Double tap for camera, tap & hold for assistant.");
     }
     setCurrentObjectDescription("");
+    setLastSpokenDetailedDescription(""); // Reset last spoken detailed description
+    setIsGeneratingDetailedDescription(false); // Ensure loading state is reset
   }, [isAssistantActive, speakAndSetStatus]);
 
   const startCamera = useCallback(async () => {
@@ -253,7 +279,6 @@ const AssistiveHomePage: React.FC = () => {
             setIsCameraActive(true); 
             speakAndSetStatus("Camera active. Point to objects. Double tap to stop.");
             
-            // Ensure canvas is sized after video is playing and dimensions are known
             if (canvasRef.current && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
                 canvasRef.current.width = videoElement.videoWidth;
                 canvasRef.current.height = videoElement.videoHeight;
@@ -262,7 +287,7 @@ const AssistiveHomePage: React.FC = () => {
             await detectAndDescribeObjects(); 
 
             if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
-            detectionIntervalRef.current = setInterval(detectAndDescribeObjects, 2000); // Detect every 2 seconds
+            detectionIntervalRef.current = setInterval(detectAndDescribeObjects, 3000); // Increased interval for Genkit flow
 
           } catch (playError) {
             console.error("Video play error:", playError);
@@ -366,10 +391,13 @@ const AssistiveHomePage: React.FC = () => {
                  stopPersonalAssistant();
              }
 
-          } catch (apiError) {
+          } catch (apiError: any) {
             console.error("Personal assistant API error:", apiError);
-            speakAndSetStatus("Sorry, I couldn't process that. Please try again.");
-            toast({ title: "Assistant Error", description: String(apiError), variant: "destructive" });
+            const errorMsg = apiError.message?.includes("API key not valid")
+                ? "AI Assistant service API key is not valid. Please check configuration."
+                : "Sorry, I couldn't process that. Please try again.";
+            speakAndSetStatus(errorMsg);
+            toast({ title: "Assistant Error", description: apiError.message || String(apiError), variant: "destructive" });
             if (speechRecognitionRef.current && isAssistantActive) {
                speakAndSetStatus("Listening...", true);
                speechRecognitionRef.current?.start();
@@ -405,8 +433,6 @@ const AssistiveHomePage: React.FC = () => {
                 speakAndSetStatus("Listening...", true);
                 speechRecognitionRef.current?.start();
             } else {
-                // This case should be rare if stopPersonalAssistant correctly nulls the ref
-                // and sets isAssistantActive to false.
                 speakAndSetStatus("Assistant stopped due to an unexpected issue.", false);
                 stopPersonalAssistant(); 
             }
@@ -464,7 +490,6 @@ const AssistiveHomePage: React.FC = () => {
       if (typeof window !== "undefined" && window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
-      // Dispose TensorFlow.js model if loaded
       if (modelRef.current && typeof (modelRef.current as any).dispose === 'function') {
         (modelRef.current as any).dispose();
         console.log("COCO-SSD model disposed.");
@@ -493,7 +518,6 @@ const AssistiveHomePage: React.FC = () => {
         aria-hidden={!isCameraActive}
         aria-label="Live camera feed for object detection"
       />
-      {/* Canvas for drawing bounding boxes, visible when camera is active */}
       <canvas 
         ref={canvasRef} 
         className={`absolute top-0 left-0 w-full h-full object-cover z-[5] ${isCameraActive ? 'block' : 'hidden'}`}
@@ -512,16 +536,24 @@ const AssistiveHomePage: React.FC = () => {
                     <p className="text-xl font-semibold">Loading AI model...</p>
                 </div>
             ) : (
-                <p className="text-2xl font-semibold mb-2">{statusMessage}</p>
+                 isGeneratingDetailedDescription && isCameraActive ? (
+                    <div className="flex items-center justify-center">
+                        <Loader2 size={28} className="animate-spin mr-2 text-accent" />
+                        <p className="text-xl font-semibold">Analyzing scene details...</p>
+                    </div>
+                ) : (
+                    <p className="text-2xl font-semibold mb-2">{statusMessage}</p>
+                )
             )}
-          {isCameraActive && currentObjectDescription && !isModelLoading && (
+          {isCameraActive && currentObjectDescription && !isModelLoading && !isGeneratingDetailedDescription && (
             <p className="text-xl mt-2 italic">"{currentObjectDescription}"</p>
           )}
         </div>
       </div>
       
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex space-x-4 pointer-events-none">
-        {isCameraActive && <Camera size={32} className="text-accent animate-pulse" />}
+        {isCameraActive && !isGeneratingDetailedDescription && <Camera size={32} className="text-accent animate-pulse" />}
+        {isCameraActive && isGeneratingDetailedDescription && <Loader2 size={32} className="text-accent animate-spin" />}
         {isAssistantActive && <Mic size={32} className="text-accent animate-pulse" />}
         {!isCameraActive && !isAssistantActive && !isModelLoading && <Info size={32} className="opacity-70" />}
          {isModelLoading && <Loader2 size={32} className="animate-spin text-primary" />}
