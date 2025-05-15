@@ -62,7 +62,7 @@ const AssistiveHomePage: React.FC = () => {
         if (mountedRef.current) setIsCurrentlySpeaking(false);
       });
     }
-  }, [setIsCurrentlySpeaking, setStatusMessage]); 
+  }, [setIsCurrentlySpeaking, setStatusMessage]);
 
   useEffect(() => {
     if (isAssistantActive) appModeRef.current = 'assistant';
@@ -109,7 +109,7 @@ const AssistiveHomePage: React.FC = () => {
         setStatusMessage("Loading AI model for object detection...");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isModelLoading]); 
+  }, [isModelLoading]);
 
 
   const drawBoundingBoxes = useCallback((predictions: cocoSsd.DetectedObject[]) => {
@@ -291,7 +291,7 @@ const AssistiveHomePage: React.FC = () => {
         (videoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop()); // Clean up old stream
         videoRef.current.srcObject = null;
     }
-    
+
     try {
       if (mountedRef.current) speakAndSetStatus("Initializing camera...", true);
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
@@ -299,7 +299,7 @@ const AssistiveHomePage: React.FC = () => {
       if (videoRef.current && mountedRef.current) {
         const videoElement = videoRef.current;
         videoElement.srcObject = stream;
-        
+
         let canPlaySetupDone = false;
 
         const canPlayTimeoutId = setTimeout(() => {
@@ -348,7 +348,7 @@ const AssistiveHomePage: React.FC = () => {
             if (videoRef.current) videoRef.current.srcObject = null; // Clear srcObject
           }
         };
-        
+
         videoElement.addEventListener("canplay", handleCanPlayAsync, { once: true });
         videoElement.load(); // Important for some browsers to trigger 'canplay'
 
@@ -416,11 +416,14 @@ const AssistiveHomePage: React.FC = () => {
         return;
     }
     if (mountedRef.current) setIsAssistantActive(true);
-    
+
     setStatusMessage("Listening...");
     setIsCurrentlySpeaking(true);
     speakText("Listening...", () => {
        if(mountedRef.current) setIsCurrentlySpeaking(false);
+        if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) { // Added check
+            speechRecognitionRef.current?.start();
+        }
     });
 
 
@@ -428,7 +431,7 @@ const AssistiveHomePage: React.FC = () => {
       async (result: SpeechRecognitionResult) => {
         if (result.isFinal) {
           if (!mountedRef.current || appModeRef.current !== 'assistant') return;
-          setStatusMessage("Processing your request..."); 
+          setStatusMessage("Processing your request...");
           try {
             let locationString: string | undefined;
             try {
@@ -443,15 +446,15 @@ const AssistiveHomePage: React.FC = () => {
             const assistantResponse = await personalAssistant({ speech: result.transcript, location: locationString });
             if (!mountedRef.current || appModeRef.current !== 'assistant') return;
 
-            setStatusMessage(assistantResponse.response); 
+            setStatusMessage(assistantResponse.response);
             setIsCurrentlySpeaking(true);
-            speakText(assistantResponse.response, () => { 
+            speakText(assistantResponse.response, () => {
               if (mountedRef.current) setIsCurrentlySpeaking(false);
-              if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) { 
-                 setStatusMessage("Listening..."); 
+              if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) {
+                 setStatusMessage("Listening...");
                  speechRecognitionRef.current?.start();
-              } else if (!isAssistantActive && mountedRef.current) { 
-                 stopPersonalAssistant(); 
+              } else if (!isAssistantActive && mountedRef.current) {
+                 stopPersonalAssistant();
               }
             });
 
@@ -465,10 +468,10 @@ const AssistiveHomePage: React.FC = () => {
             setStatusMessage(errorMsg);
             setIsCurrentlySpeaking(true);
             toast({ title: "Assistant Error", description: apiError.message || String(apiError), variant: "destructive" });
-            speakText(errorMsg, () => { 
+            speakText(errorMsg, () => {
                 if(mountedRef.current) setIsCurrentlySpeaking(false);
                 if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) {
-                   setStatusMessage("Listening..."); 
+                   setStatusMessage("Listening...");
                    speechRecognitionRef.current?.start();
                 }
             });
@@ -484,11 +487,11 @@ const AssistiveHomePage: React.FC = () => {
         let shouldStopAndSpeak = false;
         let messageForUser = "";
 
-        if (error === "no-speech" && isAssistantActive) { 
+        if (error === "no-speech" && isAssistantActive) {
             messageForUser = "Didn't catch that. Tap and hold to try again or just speak.";
         } else if (error === "audio-capture") {
             messageForUser = "No microphone found or microphone is not working. Please check your microphone.";
-            shouldStopAndSpeak = true; 
+            shouldStopAndSpeak = true;
         } else if (error === "not-allowed" || error === "service-not-allowed") {
             messageForUser = "Microphone permission denied. Please enable it in browser settings.";
             shouldStopAndSpeak = true;
@@ -498,22 +501,22 @@ const AssistiveHomePage: React.FC = () => {
 
 
         if (shouldStopAndSpeak) {
-            stopPersonalAssistant(); 
-            speakAndSetStatus(messageForUser || errorMsgText, false); 
-            return; 
+            stopPersonalAssistant();
+            speakAndSetStatus(messageForUser || errorMsgText, false);
+            return;
         }
-        
-        if (isAssistantActive && mountedRef.current) { 
+
+        if (isAssistantActive && mountedRef.current) {
             const fullErrorToSpeak = (messageForUser || errorMsgText) + (error === "no-speech" ? "" : " Let me try listening again.");
-            setStatusMessage(fullErrorToSpeak); 
+            setStatusMessage(fullErrorToSpeak);
             setIsCurrentlySpeaking(true);
-            speakText(fullErrorToSpeak, () => { 
+            speakText(fullErrorToSpeak, () => {
                 if (mountedRef.current) setIsCurrentlySpeaking(false);
                 if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) {
-                    setStatusMessage("Listening..."); 
+                    setStatusMessage("Listening...");
                     speechRecognitionRef.current?.start();
-                } else if (mountedRef.current) { 
-                    stopPersonalAssistant(); 
+                } else if (mountedRef.current) {
+                    stopPersonalAssistant();
                 }
             });
         }
@@ -525,7 +528,7 @@ const AssistiveHomePage: React.FC = () => {
 
 
   const togglePersonalAssistant = useCallback(() => {
-    if (isProcessingHoldRef.current) return; 
+    // Removed: if (isProcessingHoldRef.current) return;
     if (isAssistantActive) {
       stopPersonalAssistant();
     } else {
@@ -536,28 +539,28 @@ const AssistiveHomePage: React.FC = () => {
   const handleDoubleClick = useCallback(() => {
     if (isProcessingHoldRef.current) return;
     toggleObjectDetection();
-  }, [toggleObjectDetection]);
+  }, [toggleObjectDetection, isProcessingHoldRef]);
 
   const handlePointerDown = useCallback((event: React.MouseEvent | React.TouchEvent) => {
-    isProcessingHoldRef.current = false; 
+    isProcessingHoldRef.current = false;
     if (holdTimeoutRef.current) clearTimeout(holdTimeoutRef.current);
 
     if ('touches' in event && event.touches.length > 0) {
         touchStartXRef.current = event.touches[0].clientX;
         touchStartYRef.current = event.touches[0].clientY;
-    } else if ('clientX' in event) { 
+    } else if ('clientX' in event) {
         touchStartXRef.current = event.clientX;
         touchStartYRef.current = event.clientY;
     }
 
 
     holdTimeoutRef.current = setTimeout(() => {
-      if (holdTimeoutRef.current) { 
-        isProcessingHoldRef.current = true; 
+      if (holdTimeoutRef.current) {
+        isProcessingHoldRef.current = true;
         togglePersonalAssistant();
       }
-      holdTimeoutRef.current = null; 
-      lastTapTimeRef.current = 0; 
+      holdTimeoutRef.current = null;
+      lastTapTimeRef.current = 0;
     }, LONG_PRESS_DURATION);
   }, [togglePersonalAssistant]);
 
@@ -569,17 +572,17 @@ const AssistiveHomePage: React.FC = () => {
         holdTimeoutRef.current = null;
       }
       handleDoubleClick();
-      lastTapTimeRef.current = 0; 
+      lastTapTimeRef.current = 0;
     } else {
       lastTapTimeRef.current = now;
       if (appModeRef.current === 'assistant' && isCurrentlySpeaking) {
           window.speechSynthesis.cancel();
-          setIsCurrentlySpeaking(false); 
+          setIsCurrentlySpeaking(false);
 
-          if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) { 
-              setStatusMessage("Listening..."); 
-              speechRecognitionRef.current.stop(); 
-              speechRecognitionRef.current.start(); 
+          if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) {
+              setStatusMessage("Listening...");
+              speechRecognitionRef.current.stop();
+              speechRecognitionRef.current.start();
           }
       }
     }
@@ -596,22 +599,22 @@ const AssistiveHomePage: React.FC = () => {
         if (
           isCurrentlySpeaking &&
           appModeRef.current === 'assistant' &&
-          isAssistantActive && 
-          touchStartYRef.current - touchEndY > SWIPE_THRESHOLD_Y && 
-          Math.abs(touchEndX - touchStartXRef.current) < SWIPE_THRESHOLD_X 
+          isAssistantActive &&
+          touchStartYRef.current - touchEndY > SWIPE_THRESHOLD_Y &&
+          Math.abs(touchEndX - touchStartXRef.current) < SWIPE_THRESHOLD_X
         ) {
           wasSwipeInterrupt = true;
           window.speechSynthesis.cancel();
           setIsCurrentlySpeaking(false);
-          
+
           if (mountedRef.current && speechRecognitionRef.current && isAssistantActive) {
-            setStatusMessage("Listening..."); 
-            speechRecognitionRef.current.stop(); 
-            speechRecognitionRef.current.start(); 
+            setStatusMessage("Listening...");
+            speechRecognitionRef.current.stop();
+            speechRecognitionRef.current.start();
           }
         }
     }
-    
+
     touchStartXRef.current = null;
     touchStartYRef.current = null;
 
@@ -620,15 +623,16 @@ const AssistiveHomePage: React.FC = () => {
         clearTimeout(holdTimeoutRef.current);
         holdTimeoutRef.current = null;
       }
-      isProcessingHoldRef.current = false; 
-      return; 
+      isProcessingHoldRef.current = false;
+      return;
     }
 
-    if (holdTimeoutRef.current) { 
+    if (holdTimeoutRef.current) {
       clearTimeout(holdTimeoutRef.current);
       holdTimeoutRef.current = null;
       handleTapOrClick();
     }
+    // isProcessingHoldRef.current = false; // This was in the original user code, seems correct place.
   }, [isCurrentlySpeaking, isAssistantActive, setIsCurrentlySpeaking, setStatusMessage, handleTapOrClick]);
 
 
@@ -655,12 +659,12 @@ const AssistiveHomePage: React.FC = () => {
 
   useEffect(() => {
     if (isCameraActive && appModeRef.current === 'camera' && !isGeneratingDetailedDescription && !isCurrentlySpeaking) {
-      if (!detectionIntervalRef.current) { 
-        detectAndDescribeObjects(); 
+      if (!detectionIntervalRef.current) {
+        detectAndDescribeObjects();
         detectionIntervalRef.current = setInterval(detectAndDescribeObjects, 3000);
       }
     } else {
-      if (detectionIntervalRef.current) { 
+      if (detectionIntervalRef.current) {
         clearInterval(detectionIntervalRef.current);
         detectionIntervalRef.current = null;
       }
@@ -677,47 +681,47 @@ const AssistiveHomePage: React.FC = () => {
   return (
     <div
       className="flex flex-col items-center justify-center min-h-screen w-full bg-background text-foreground p-4 touch-manipulation select-none relative overflow-hidden"
-      onMouseDown={handlePointerDown} 
-      onMouseUp={handlePointerUp}     
-      onTouchStart={(e) => {  handlePointerDown(e); }} 
-      onTouchEnd={(e) => {  handlePointerUp(e); }}   
+      onMouseDown={handlePointerDown}
+      onMouseUp={handlePointerUp}
+      onTouchStart={(e) => {  handlePointerDown(e as any); }}
+      onTouchEnd={(e) => {  handlePointerUp(e as any); }}
       aria-label="Assistive Visions Interactive Area"
       role="application"
-      tabIndex={0} 
+      tabIndex={0}
     >
       <video
         ref={videoRef}
         className={`absolute top-0 left-0 w-full h-full object-cover z-0 ${isCameraActive ? 'block' : 'hidden'}`}
         autoPlay
-        playsInline 
-        muted 
+        playsInline
+        muted
         aria-hidden={!isCameraActive}
         aria-label="Live camera feed for object detection"
       />
       <canvas
         ref={canvasRef}
         className={`absolute top-0 left-0 w-full h-full object-cover z-[5] ${isCameraActive && objectDetections.length > 0 ? 'block' : 'hidden'}`}
-        aria-hidden="true" 
+        aria-hidden="true"
       />
 
       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-6 pointer-events-none">
         <div
-          className="text-center bg-black/70 p-4 rounded-lg shadow-xl max-w-md backdrop-blur-sm" 
-          aria-live="assertive" 
-          aria-atomic="true"    
+          className="text-center bg-black/70 p-4 rounded-lg shadow-xl max-w-md backdrop-blur-sm"
+          aria-live="assertive"
+          aria-atomic="true"
         >
             {isModelLoading ? (
                 <div className="flex items-center justify-center">
                     <Loader2 size={32} className="animate-spin mr-2 text-primary" />
                     <p className="text-xl font-semibold">Loading AI model...</p>
                 </div>
-            ) : ( 
+            ) : (
                  isGeneratingDetailedDescription && isCameraActive ? (
                     <div className="flex items-center justify-center">
                         <Loader2 size={28} className="animate-spin mr-2 text-accent" />
                         <p className="text-xl font-semibold">Analyzing scene details...</p>
                     </div>
-                ) : ( 
+                ) : (
                     <p className="text-2xl font-semibold mb-2">{statusMessage}</p>
                 )
             )}
@@ -750,7 +754,5 @@ const AssistiveHomePage: React.FC = () => {
 };
 
 export default AssistiveHomePage;
-
-    
 
     
